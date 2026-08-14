@@ -61,6 +61,9 @@ Downloads the release binary for your platform, verifies its checksum, and puts 
 cargo install --git https://github.com/glennbarosen/emuhub-tui --bin emuhub
 ```
 
+Expect this to take a while — the release profile uses full LTO over a crypto-heavy dependency tree.
+The prebuilt binaries above are the same build, already compiled.
+
 ## Usage
 
 ```bash
