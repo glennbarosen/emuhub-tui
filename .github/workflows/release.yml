@@ -1,15 +1,22 @@
 name: Release
 
-# Push to main = deploy — but only when it's a release. `check-version` reads
-# workspace.package.version out of Cargo.toml and skips the whole build matrix
-# unless that version has no GitHub Release yet. So: ordinary commits (docs,
-# refactors, CI tweaks) push straight to main and just run CI; a version bump
-# in Cargo.toml is what actually cuts a release, tag included — there's no
-# separate `git tag` step anymore.
+# Every push to main is a release, full stop. `bump-version` reads the latest
+# published GitHub Release (not whatever's sitting in Cargo.toml — that field
+# is overwritten every run, so hand-editing it is pointless), increments the
+# patch number, commits that straight to main, and the build + release jobs
+# run against the bumped commit. No manual version edit, no separate `git tag`
+# step.
+#
+# `concurrency` serializes runs so two pushes landing close together can't
+# both read the same "latest release" and race to create the same tag.
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,38 +25,43 @@ permissions:
   contents: write
 
 jobs:
-  check-version:
+  bump-version:
     runs-on: ubuntu-latest
+    # Belt-and-braces: GITHUB_TOKEN pushes don't retrigger `on: push` workflows
+    # by default, which is what actually stops this from looping. The marker
+    # just makes that intent legible in the commit log.
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      version: ${{ steps.check.outputs.version }}
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check whether this version already has a release
-        id: check
+      - name: Bump the patch version and push
+        id: bump
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version=$(awk -F'"' '/^\[workspace\.package\]/{f=1} f && /^version *=/{print $2; exit}' Cargo.toml)
-          if [ -z "$version" ]; then
-            echo "::error::couldn't read workspace.package.version from Cargo.toml"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName -q '.[0].tagName // "v0.0.0"')
+          latest="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$latest"
+          next="${major}.${minor}.$((patch + 1))"
 
-          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v$version is already released — nothing to do"
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "v$version has no release yet — building"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-          fi
+          sed -i "0,/^version = \".*\"/s//version = \"${next}\"/" Cargo.toml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v${next} [skip release]"
+          git push
+
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: check-version
-    if: needs.check-version.outputs.should_release == 'true'
+    needs: bump-version
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -72,6 +84,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-version.outputs.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -90,7 +104,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${{ needs.check-version.outputs.version }}"
+          version="${{ needs.bump-version.outputs.version }}"
           name="emuhub-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp target/release/emuhub "dist/${name}/"
@@ -112,8 +126,7 @@ jobs:
             dist/*.sha256
 
   release:
-    needs: [check-version, build]
-    if: needs.check-version.outputs.should_release == 'true'
+    needs: [bump-version, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -121,17 +134,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Creates the vX.Y.Z tag as part of creating the release — pinned to the
-      # commit that triggered this run, not just "whatever main is now", in
-      # case another push landed while the build matrix was running.
+      # Creates the vX.Y.Z tag as part of creating the release, pinned to the
+      # bump commit (not just "whatever main is now") in case another push
+      # lands while the build matrix is running.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${{ needs.check-version.outputs.version }}"
+          version="${{ needs.bump-version.outputs.version }}"
           gh release create "v${version}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "v${version}" \
-            --target "${{ github.sha }}" \
+            --target "${{ needs.bump-version.outputs.sha }}" \
             --generate-notes \
             dist/*.tar.gz dist/*.sha256
