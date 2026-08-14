@@ -187,15 +187,14 @@ keypress testing; a real interactive check in an actual terminal is still worth 
 
 ## Releasing
 
-Push to `main` = deploy, every time, no version bump required: `.github/workflows/release.yml`'s
-`bump-version` job reads the latest published GitHub Release (not `workspace.package.version` in
-`Cargo.toml` — that field gets overwritten every run, so hand-editing it does nothing), increments the
-patch number, commits that straight to `main`, and the build matrix + release jobs run against the
-bumped commit. So: any push to `main` — a typo fix, a large feature, anything — cuts a new patch
-release. The workflow builds native binaries for x86_64/aarch64 Linux and arm64 macOS, then creates the
-`vX.Y.Z` tag and GitHub Release itself — there's no manual version edit and no separate `git tag` step.
-A `concurrency` group serializes runs so two pushes landing close together can't race to read the same
-"latest release" and collide on a tag.
+Releasing is manual and deliberate, not a side effect of pushing to `main` — `push` only runs `ci.yml`
+(build/test/clippy). To ship a release: GitHub → Actions → **Release** → **Run workflow**, pick
+`patch`/`minor`/`major`. `.github/workflows/release.yml`'s `bump-version` job reads the current
+`workspace.package.version` out of `Cargo.toml`, bumps the chosen part, commits and pushes that itself
+(no local edit needed), and the build matrix + release jobs run against the bumped commit. It builds
+native binaries for x86_64/aarch64 Linux and arm64 macOS, then creates the `vX.Y.Z` tag and GitHub
+Release itself — no separate `git tag` step. A `concurrency` group serializes runs in case the workflow
+gets dispatched twice in quick succession.
 
 The AUR package (`packaging/aur/PKGBUILD`) is **not** part of this automation — after a release lands,
 update it by hand: bump `pkgver` to match, `updpkgsums`, regenerate `.SRCINFO`, push to the separate AUR

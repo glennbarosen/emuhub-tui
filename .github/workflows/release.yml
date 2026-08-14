@@ -1,18 +1,24 @@
 name: Release
 
-# Every push to main is a release, full stop. `bump-version` reads the latest
-# published GitHub Release (not whatever's sitting in Cargo.toml — that field
-# is overwritten every run, so hand-editing it is pointless), increments the
-# patch number, commits that straight to main, and the build + release jobs
-# run against the bumped commit. No manual version edit, no separate `git tag`
-# step.
-#
-# `concurrency` serializes runs so two pushes landing close together can't
-# both read the same "latest release" and race to create the same tag.
+# Manual only, on purpose: releasing is a deliberate act, not a side effect of
+# every push (ci.yml already runs build/test/clippy on every push to main —
+# this workflow is the separate "cut a release" button). To ship one: Actions
+# tab → Release → Run workflow → pick patch/minor/major. `bump-version` reads
+# the current version straight out of Cargo.toml, bumps it, commits and
+# pushes that, and the build/release jobs run against the bumped commit —
+# no local edit needed.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 concurrency:
   group: release
@@ -27,34 +33,33 @@ permissions:
 jobs:
   bump-version:
     runs-on: ubuntu-latest
-    # Belt-and-braces: GITHUB_TOKEN pushes don't retrigger `on: push` workflows
-    # by default, which is what actually stops this from looping. The marker
-    # just makes that intent legible in the commit log.
-    if: "!contains(github.event.head_commit.message, '[skip release]')"
     outputs:
       version: ${{ steps.bump.outputs.version }}
       sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Bump the patch version and push
+      - name: Bump the ${{ inputs.bump }} version and push
         id: bump
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName -q '.[0].tagName // "v0.0.0"')
-          latest="${latest#v}"
-          IFS='.' read -r major minor patch <<< "$latest"
-          next="${major}.${minor}.$((patch + 1))"
+          current=$(awk -F'"' '/^\[workspace\.package\]/{f=1} f && /^version *=/{print $2; exit}' Cargo.toml)
+          if [ -z "$current" ]; then
+            echo "::error::couldn't read workspace.package.version from Cargo.toml"
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$current"
+          case "${{ inputs.bump }}" in
+            major) next="$((major + 1)).0.0" ;;
+            minor) next="${major}.$((minor + 1)).0" ;;
+            patch) next="${major}.${minor}.$((patch + 1))" ;;
+          esac
 
           sed -i "0,/^version = \".*\"/s//version = \"${next}\"/" Cargo.toml
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "Release v${next} [skip release]"
+          git commit -am "Release v${next}"
           git push
 
           echo "version=${next}" >> "$GITHUB_OUTPUT"
