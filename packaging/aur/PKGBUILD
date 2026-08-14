@@ -22,11 +22,8 @@ conflicts=('emuhub' 'emuhub-tui')
 source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/emuhub-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
 source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/emuhub-$pkgver-aarch64-unknown-linux-gnu.tar.gz")
 
-# Replace with real sums once the v0.1.0 release exists (auto-published on the
-# next push to main that carries this version):
-#   updpkgsums
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('b3643079d76da3283e297ad3a5a9988eedf9b6504f0be4f4b5dd4786ab5854a1')
+sha256sums_aarch64=('ea7e725cf748c759a7aa3d3b2d9d563f67a4ae5b220277bfa21cba6497516c21')
 
 package() {
 	local _target

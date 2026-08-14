@@ -1,0 +1,18 @@
+pkgbase = emuhub-tui-bin
+	pkgdesc = Terminal ROM browser and favourites manager for a Miyoo Mini+ running Onion OS, over SSH/SFTP
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/glennbarosen/emuhub-tui
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	provides = emuhub
+	provides = emuhub-tui
+	conflicts = emuhub
+	conflicts = emuhub-tui
+	source_x86_64 = emuhub-tui-bin-0.1.0-x86_64.tar.gz::https://github.com/glennbarosen/emuhub-tui/releases/download/v0.1.0/emuhub-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+	sha256sums_x86_64 = b3643079d76da3283e297ad3a5a9988eedf9b6504f0be4f4b5dd4786ab5854a1
+	source_aarch64 = emuhub-tui-bin-0.1.0-aarch64.tar.gz::https://github.com/glennbarosen/emuhub-tui/releases/download/v0.1.0/emuhub-0.1.0-aarch64-unknown-linux-gnu.tar.gz
+	sha256sums_aarch64 = ea7e725cf748c759a7aa3d3b2d9d563f67a4ae5b220277bfa21cba6497516c21
+
+pkgname = emuhub-tui-bin
