@@ -1,0 +1,37 @@
+[package]
+name = "emuhub-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "emuhub"
+path = "src/main.rs"
+
+[dependencies]
+emuhub-core = { workspace = true }
+tokio = { workspace = true }
+ratatui = { workspace = true }
+# chafa-dyn (ratatui-image's default) needs libchafa + pkg-config at build
+# time. Kitty graphics and the halfblock fallback don't need it — only chafa's
+# own encoders do — so build without it and keep the build dependency-free.
+ratatui-image = { workspace = true, features = ["crossterm", "image-defaults"] }
+crossterm = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+nucleo = { workspace = true }
+directories = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "spike"
+path = "src/bin/spike.rs"

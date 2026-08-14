@@ -1,0 +1,10 @@
+/mnt/SDCARD/Roms/favourite.json
+/mnt/SDCARD/Roms/recentlist-hidden.json
+/mnt/SDCARD/Roms/GBA/Pokemon - Emerald.gba
+/mnt/SDCARD/Roms/GBA/Metroid Fusion.gba
+/mnt/SDCARD/Roms/GBA/Wario Land 4.gba
+/mnt/SDCARD/Roms/GBA/GBA_cache6.db
+/mnt/SDCARD/Roms/GB/Tetris.gb
+/mnt/SDCARD/Roms/FC/Super Mario Bros.nes
+/mnt/SDCARD/Roms/FC/Contra.nes
+/mnt/SDCARD/Roms/PS/Final Fantasy VII (Disc 1).chd

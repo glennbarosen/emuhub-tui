@@ -1,0 +1,12 @@
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Pokemon - Emerald.state
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Pokemon - Emerald.state1
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Pokemon - Emerald.state1.png
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Pokemon - Emerald.state21
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Pokemon - Emerald.state21.png
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Wario Land 4.state.auto
+/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/retroarch.cfg
+/mnt/SDCARD/Saves/CurrentProfile/states/gearboy/Kirby.state3
+/mnt/SDCARD/Saves/CurrentProfile/states/gambatte/Kirby.state
+/mnt/SDCARD/Saves/CurrentProfile/states/picodrive/Sonic.md.state
+/mnt/SDCARD/Saves/CurrentProfile/saves/gpsp/Pokemon - Emerald.srm
+/mnt/SDCARD/Saves/CurrentProfile/saves/gpsp/Pokemon - Emerald.state21.opt

@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/emuhub-core", "crates/emuhub-tui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Glenn Barosen <glennbarosen@pm.me>"]
+description = "Terminal ROM browser and favourites manager for a Miyoo Mini+ running Onion OS, over SSH/SFTP"
+repository = "https://github.com/glennbarosen/emuhub-tui"
+readme = "README.md"
+keywords = ["miyoo", "onion-os", "retro-gaming", "tui", "ssh"]
+categories = ["command-line-utilities"]
+# Set by the dependency floor, not by anything this code does: ratatui 0.30 and
+# image 0.25 both declare 1.88.
+rust-version = "1.88"
+
+[workspace.dependencies]
+emuhub-core = { path = "crates/emuhub-core" }
+
+tokio = { version = "1", features = ["full"] }
+russh = "0.62"
+russh-sftp = "2.4"
+ratatui = "0.30"
+ratatui-image = { version = "11", default-features = false }
+crossterm = "0.29"
+image = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+nucleo = "0.5"
+directories = "6"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -1,0 +1,38 @@
+# Maintainer: Glenn Barosen <glennbarosen@pm.me>
+#
+# This is the source of truth for the AUR package. Publishing an update means
+# bumping pkgver, refreshing sha256sums (`updpkgsums`), regenerating .SRCINFO
+# (`makepkg --printsrcinfo > .SRCINFO`), and pushing both to
+# ssh://aur@aur.archlinux.org/emuhub-tui-bin.git — the AUR is a separate repo
+# containing only PKGBUILD and .SRCINFO.
+
+pkgname=emuhub-tui-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Terminal ROM browser and favourites manager for a Miyoo Mini+ running Onion OS, over SSH/SFTP"
+arch=('x86_64' 'aarch64')
+url="https://github.com/glennbarosen/emuhub-tui"
+license=('MIT')
+provides=('emuhub' 'emuhub-tui')
+conflicts=('emuhub' 'emuhub-tui')
+
+source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/emuhub-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/emuhub-$pkgver-aarch64-unknown-linux-gnu.tar.gz")
+
+# Replace with real sums once v0.1.0 is tagged and its artifacts exist:
+#   updpkgsums
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+	local _target
+	case "$CARCH" in
+		x86_64) _target="x86_64-unknown-linux-gnu" ;;
+		aarch64) _target="aarch64-unknown-linux-gnu" ;;
+	esac
+	local _dir="$srcdir/emuhub-$pkgver-$_target"
+
+	install -Dm755 "$_dir/emuhub" "$pkgdir/usr/bin/emuhub"
+	install -Dm644 "$_dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm644 "$_dir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

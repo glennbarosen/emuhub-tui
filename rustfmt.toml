@@ -1,0 +1,7 @@
+# Match the style already in the files rather than reflowing every line to
+# rustfmt's defaults. This codebase was written to ~110 columns, and its static
+# tables (`consoles::ALL_SYSTEMS`, the core-name map) are deliberately one row
+# per line — the default `struct_lit_width` of 18 would explode each of the 25
+# console entries into five lines and make the table unreadable.
+max_width = 110
+use_small_heuristics = "Max"
