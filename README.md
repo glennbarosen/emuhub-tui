@@ -3,8 +3,7 @@
 Browse your Miyoo Mini+ ROM library, sync favourites, and check your save states — from the terminal,
 over SSH. Box art included.
 
-<!-- Replace with a real capture: docs/screenshot.png -->
-<!-- ![emuhub](docs/screenshot.png) -->
+![emuhub](docs/screenshot.png)
 
 `emuhub` connects to a **Miyoo Mini+ running [Onion OS](https://onionui.github.io/)** over SSH/SFTP and
 gives you a three-pane TUI over the whole SD card: consoles, games, and a detail pane with box art.
@@ -19,6 +18,8 @@ macOS/iOS app, built so it runs anywhere a terminal does.
 - **Recently Played**, read from the device's own play history.
 - **Save-state browser** with thumbnails — including the ones RetroArch files under core names where
   you'd never find them by hand.
+
+  ![Save-state browser](docs/screenshot-saves.png)
 - **Box art in the terminal** via the Kitty graphics protocol, with a halfblock fallback everywhere
   else.
 - **Rename and delete that clean up after themselves** — box art, save states and their thumbnails,
