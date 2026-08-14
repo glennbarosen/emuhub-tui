@@ -765,7 +765,7 @@ fn draw_detail_actions(frame: &mut Frame, app: &App, game: &GameFile, area: Rect
                         0 => item.label().to_string(),
                         n => format!("{}  ⦿{n}", item.label()),
                     },
-                    other => other.label().to_string(),
+                    DetailItem::Settings => item.label().to_string(),
                 })
                 .collect(),
         ),

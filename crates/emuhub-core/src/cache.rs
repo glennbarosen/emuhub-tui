@@ -123,8 +123,14 @@ pub fn relative_age(then: u64, now: u64) -> String {
 
 /// Maps a remote path to a flat local cache filename (device paths contain
 /// `/`, which can't appear in a single filename).
+///
+/// Literal `_` is escaped to `__` before `/` is collapsed to a single `_` —
+/// without that, a remote path containing a literal underscore where another
+/// path has a slash could flatten to the same filename (e.g. `"a_b"` and
+/// `"a/b"` both naively becoming `"a_b"`), aliasing one game's cached image
+/// under another's key.
 fn cache_filename(remote_path: &str) -> String {
-    remote_path.replace('/', "_")
+    remote_path.replace('_', "__").replace('/', "_")
 }
 
 pub fn cached_image_path(paths: &Paths, remote_path: &str) -> PathBuf {
@@ -310,6 +316,11 @@ mod tests {
         let filename = path.file_name().unwrap().to_string_lossy().into_owned();
         assert!(!filename.contains('/'), "flattened filename must not contain a path separator");
         assert!(filename.starts_with("_mnt_SDCARD"));
+    }
+
+    #[test]
+    fn cache_filename_does_not_collide_on_literal_underscore_vs_slash() {
+        assert_ne!(cache_filename("/mnt/SDCARD/a_b"), cache_filename("/mnt/SDCARD/a/b"));
     }
 
     #[test]

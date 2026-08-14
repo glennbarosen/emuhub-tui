@@ -20,6 +20,27 @@ use crate::search::SearchState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Checked before anything else touches the terminal or the config file:
+    // `emuhub --version` used to fall straight into the `host_arg` branch
+    // below and get persisted as the configured host, so a later launch
+    // tried to connect to a device named "--version" and Settings > Change
+    // IP showed that instead of an empty field.
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("emuhub {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--help" | "-h") => {
+            println!(
+                "Usage: emuhub [HOST]\n\n\
+                 HOST  Miyoo Mini+ IP address or hostname; persisted to config.toml.\n\
+                       Omit to use the configured host, or set one later from Settings > Change IP."
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
+
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -33,6 +54,10 @@ async fn main() -> anyhow::Result<()> {
     // when the Miyoo's DHCP lease moves and re-typing the IP each launch
     // gets old fast.
     if let Some(host_arg) = std::env::args().nth(1) {
+        if host_arg.starts_with('-') {
+            eprintln!("emuhub: unrecognized option '{host_arg}'\nUsage: emuhub [HOST]");
+            std::process::exit(2);
+        }
         config.host = host_arg;
         cache::save_config(&paths, &config)?;
     }
@@ -207,9 +232,6 @@ fn handle_key(
             KeyCode::Esc => app.ip_prompt = None,
             KeyCode::Enter => {
                 if let Some(host) = app.confirm_ip_prompt() {
-                    let mut config = cache::load_config(paths).unwrap_or_default();
-                    config.host = host.clone();
-                    let _ = cache::save_config(paths, &config);
                     app.set_status(format!("Connecting to {host}..."), false);
                     let _ = req_tx.send(DeviceRequest::SetHost(host));
                 }
@@ -275,9 +297,6 @@ fn handle_key(
             KeyCode::Char('k') | KeyCode::Up => discovery.move_selection(-1),
             KeyCode::Enter => {
                 if let Some(host) = app.confirm_discovery() {
-                    let mut config = cache::load_config(paths).unwrap_or_default();
-                    config.host = host.clone();
-                    let _ = cache::save_config(paths, &config);
                     app.set_status(format!("Connecting to {host}..."), false);
                     let _ = req_tx.send(DeviceRequest::SetHost(host));
                 }

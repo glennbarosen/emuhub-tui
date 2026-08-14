@@ -34,7 +34,10 @@ pub struct GameFile {
 
 impl GameFile {
     pub fn display_name(&self) -> &str {
-        self.name.strip_suffix(&format!(".{}", self.extension)).unwrap_or(&self.name)
+        self.name
+            .strip_suffix(self.extension.as_str())
+            .and_then(|s| s.strip_suffix('.'))
+            .unwrap_or(&self.name)
     }
 }
 

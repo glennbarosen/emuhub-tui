@@ -135,6 +135,13 @@ pub async fn run(
             }
             DeviceRequest::SetHost(host) => {
                 config.host = host;
+                // Persisted here rather than by the UI task: this is the one
+                // place that already owns `config` and `paths`, so there's no
+                // need to make the render loop do its own synchronous
+                // load-modify-save round trip just to save the same field.
+                if let Err(err) = cache::save_config(&paths, &config) {
+                    tracing::warn!(%err, "failed to persist host to config");
+                }
                 // Reassigning drops any existing session before dialing the
                 // new host — requests are processed strictly sequentially
                 // here, so there's no in-flight `Connect` this could race.

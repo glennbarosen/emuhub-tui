@@ -64,6 +64,12 @@ Two-crate workspace so a headless CLI mode is nearly free later:
     routes to it when it holds focus. **Per-game actions (saves, favourite, rename, delete) have no
     key bindings** — the Details menu is their only entry point, deliberately, so there is one route
     to each rather than a menu plus hidden shortcuts to keep in sync.
+    - `app/menus.rs` — the overlay/menu state structs (`IpPromptState`, `SettingsState`,
+      `DiscoveryState`, `SavesState`, `ConfirmDeleteState`, `RenamePromptState`, `DetailState` and the
+      `SettingsItem`/`DetailItem`/`GameSettingsItem` enums driving them) split out of `app.rs` — this is
+      the part of `App`'s state that grows by one self-contained struct per new modal rather than by
+      touching existing logic, re-exported into `app::` via `pub use menus::*` so nothing outside `app`
+      needs to know it moved.
   - `device.rs` — the device task: owns the one `Device` session, serializes SFTP ops, reports
     `DeviceEvent`s back over an `mpsc` channel. The UI task never awaits network I/O directly.
   - `search.rs` — `/` fuzzy search across every console at once, via `nucleo`.

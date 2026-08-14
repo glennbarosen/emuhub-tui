@@ -40,13 +40,15 @@ pub fn parse_save_listing(output: &str) -> Vec<SaveState> {
 
     // Thumbnails are `{statefile}.png`, so the key is the sibling state's own
     // full path. Collected first because a thumbnail can appear before or
-    // after its state in `find` output.
+    // after its state in `find` output. Case-insensitive, matching
+    // `consoles::is_rom_extension` — RetroArch's own extension casing isn't
+    // something to bet a thumbnail pairing on.
     let thumbnails: HashMap<&str, &str> =
-        paths.iter().filter_map(|path| path.strip_suffix(".png").map(|state| (state, *path))).collect();
+        paths.iter().filter_map(|path| strip_png_suffix(path).map(|state| (state, *path))).collect();
 
     paths
         .iter()
-        .filter(|path| !path.ends_with(".png"))
+        .filter(|path| strip_png_suffix(path).is_none())
         .filter_map(|path| {
             let (game_name, slot_number) = parse_slot(filename_of(path)?)?;
             Some(SaveState {
@@ -61,6 +63,15 @@ pub fn parse_save_listing(output: &str) -> Vec<SaveState> {
             })
         })
         .collect()
+}
+
+/// Case-insensitive `.png` suffix strip. Filenames are also matched via
+/// `strip_prefix`/exact string compare elsewhere in this module, but the
+/// extension itself is the one place a differently-cased thumbnail (`.PNG`)
+/// would otherwise silently fail to pair with its save state.
+fn strip_png_suffix(path: &str) -> Option<&str> {
+    let cut = path.len().checked_sub(".png".len())?;
+    path[cut..].eq_ignore_ascii_case(".png").then(|| &path[..cut])
 }
 
 /// The save states and save files belonging to `game`, ordered by how likely
@@ -193,6 +204,19 @@ mod tests {
         assert!(
             !states.iter().any(|s| s.path.ends_with(".png")),
             "a thumbnail must never be listed as a save state in its own right"
+        );
+    }
+
+    #[test]
+    fn thumbnail_pairing_is_case_insensitive_on_the_extension() {
+        let listing = "/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Game.state\n\
+             /mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Game.state.PNG";
+        let states = parse_save_listing(listing);
+
+        assert_eq!(states.len(), 1, "an upper-cased .PNG thumbnail must not be listed as its own state");
+        assert_eq!(
+            states[0].thumbnail_path.as_deref(),
+            Some("/mnt/SDCARD/Saves/CurrentProfile/states/gpsp/Game.state.PNG")
         );
     }
 

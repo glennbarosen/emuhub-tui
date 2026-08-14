@@ -47,21 +47,14 @@ pub struct RenamePlan {
 
 /// Rejected new names: anything that would escape the console folder or
 /// produce a file the scanner can't see again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RenameError {
+    #[error("name cannot be empty")]
     Empty,
+    #[error("name cannot contain '/'")]
     ContainsSlash,
+    #[error("name cannot be '.' or '..'")]
     DotSegment,
-}
-
-impl std::fmt::Display for RenameError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RenameError::Empty => write!(f, "name cannot be empty"),
-            RenameError::ContainsSlash => write!(f, "name cannot contain '/'"),
-            RenameError::DotSegment => write!(f, "name cannot be '.' or '..'"),
-        }
-    }
 }
 
 impl DeletePlan {
@@ -172,7 +165,7 @@ pub fn rename_plan(
     }
 
     let new_game = GameFile {
-        path: new_path.clone(),
+        path: new_path,
         name: new_filename,
         console_folder: game.console_folder.clone(),
         extension: game.extension.clone(),
