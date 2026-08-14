@@ -8,9 +8,9 @@ for users rather than contributors.
 
 ## Skills
 
-Three recurring tasks have skills in `.claude/skills/` — prefer them over reinventing the workflow:
+Two recurring tasks have skills in `.claude/skills/` — prefer them over reinventing the workflow:
 `run-against-device` (test a change on the real handheld), `add-console` (register a new
-console/system), `install-emuhub` (build/update the `emuhub` binary on `PATH`).
+console/system).
 
 ## Stack
 
@@ -87,23 +87,14 @@ cargo run -p emuhub-tui --bin spike -- <miyoo-ip>      # device diagnostic (no T
                                                        # box art, recents, raw save-tree dump
 ```
 
-### Installing `emuhub` on PATH
+`cargo run -p emuhub-tui --bin emuhub -- <miyoo-ip>` is the whole dev loop — there is no separate
+"install to `PATH`" step. Deliberately: a binary at `~/.local/bin/emuhub` can outlive the code change
+that produced it and get silently shadowed by `/usr/bin/emuhub` if the user ever installs the AUR
+package (`PATH` puts `/usr/bin` first on many setups), so a stale local build looks exactly like a fix
+that didn't work. `cargo run` always rebuilds and runs the current tree — no state to get out of sync.
 
-```bash
-cargo install --path crates/emuhub-tui --bin emuhub --root ~/.local --debug
-```
-
-**Use `--debug`.** The workspace `[profile.release]` has `lto = true, codegen-units = 1` (fine for a
-one-off optimized build), but `cargo install` without `--debug` runs that profile, and a full LTO
-build of the crypto-heavy dependency tree (`russh`, `aws-lc-sys`, …) pegs every core for 7+ minutes. This is a network-bound TUI, not a compute-bound one — the debug build's runtime is
-indistinguishable in practice and installs in ~6 seconds. Only drop `--debug` if you specifically want
-to measure/ship an optimized binary.
-
-`~/.local/bin` must be on `PATH`. Re-run the same install command after future code changes to update
-it.
-
-**If the AUR package is also installed, `/usr/bin/emuhub` may shadow this one** depending on `PATH`
-order — check `which emuhub` before concluding a change didn't take effect.
+The AUR package and `install.sh` (see `README.md`) exist for *end users*; nothing in this repo needs
+`emuhub` on `PATH` for development.
 
 ## Device-protocol gotchas
 
