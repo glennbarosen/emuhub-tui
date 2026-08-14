@@ -2,6 +2,9 @@
 **/*.rs.bk
 *.pdb
 
+# Claude Code session-local state, not project content
+.claude/scheduled_tasks.lock
+
 # Editor / OS litter
 .DS_Store
 *.swp

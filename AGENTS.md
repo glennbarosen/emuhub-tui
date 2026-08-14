@@ -179,6 +179,15 @@ The Miyoo's dropbear is old and won't negotiate with `russh`'s modern defaults. 
 on why — raw-mode key input can't be automated here, so these substitute for interactive
 keypress testing; a real interactive check in an actual terminal is still worth doing after UI changes).
 
-## Deployment
+## Releasing
 
-None — this is a local CLI tool (`emuhub`), not a deployed service.
+Push to `main` = deploy, gated on a version bump: `.github/workflows/release.yml` reads
+`workspace.package.version` from the root `Cargo.toml` on every push to `main`, and skips the entire
+build matrix unless that version has no GitHub Release yet. To ship a release: bump the version in
+`Cargo.toml`, commit, push to `main`. The workflow builds native binaries for x86_64/aarch64 Linux and
+arm64 macOS, then creates the `vX.Y.Z` tag and GitHub Release itself — there's no separate `git tag`
+step. A push that doesn't touch the version just runs CI as normal and publishes nothing.
+
+The AUR package (`packaging/aur/PKGBUILD`) is **not** part of this automation — after a release lands,
+update it by hand: bump `pkgver` to match, `updpkgsums`, regenerate `.SRCINFO`, push to the separate AUR
+git repo. See the comment at the top of the PKGBUILD.

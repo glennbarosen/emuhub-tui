@@ -1,8 +1,14 @@
 name: Release
 
+# Push to main = deploy — but only when it's a release. `check-version` reads
+# workspace.package.version out of Cargo.toml and skips the whole build matrix
+# unless that version has no GitHub Release yet. So: ordinary commits (docs,
+# refactors, CI tweaks) push straight to main and just run CI; a version bump
+# in Cargo.toml is what actually cuts a release, tag included — there's no
+# separate `git tag` step anymore.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -12,7 +18,38 @@ permissions:
   contents: write
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether this version already has a release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^\[workspace\.package\]/{f=1} f && /^version *=/{print $2; exit}' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::couldn't read workspace.package.version from Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$version is already released — nothing to do"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$version has no release yet — building"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -53,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ needs.check-version.outputs.version }}"
           name="emuhub-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp target/release/emuhub "dist/${name}/"
@@ -75,21 +112,26 @@ jobs:
             dist/*.sha256
 
   release:
-    needs: build
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      # Creates the vX.Y.Z tag as part of creating the release — pinned to the
+      # commit that triggered this run, not just "whatever main is now", in
+      # case another push landed while the build matrix was running.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          version="${{ needs.check-version.outputs.version }}"
+          gh release create "v${version}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
+            --title "v${version}" \
+            --target "${{ github.sha }}" \
             --generate-notes \
             dist/*.tar.gz dist/*.sha256

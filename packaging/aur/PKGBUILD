@@ -1,8 +1,11 @@
 # Maintainer: Glenn Barosen <glennbarosen@pm.me>
 #
-# This is the source of truth for the AUR package. Publishing an update means
-# bumping pkgver, refreshing sha256sums (`updpkgsums`), regenerating .SRCINFO
-# (`makepkg --printsrcinfo > .SRCINFO`), and pushing both to
+# This is the source of truth for the AUR package. The main repo's release
+# workflow tags and publishes a GitHub Release automatically whenever
+# workspace.package.version in Cargo.toml changes on main — there's no manual
+# `git tag` step there. Publishing the *AUR* update is still manual: bump
+# pkgver to match, refresh sha256sums (`updpkgsums`), regenerate .SRCINFO
+# (`makepkg --printsrcinfo > .SRCINFO`), and push both to
 # ssh://aur@aur.archlinux.org/emuhub-tui-bin.git — the AUR is a separate repo
 # containing only PKGBUILD and .SRCINFO.
 
@@ -19,7 +22,8 @@ conflicts=('emuhub' 'emuhub-tui')
 source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/emuhub-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
 source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/emuhub-$pkgver-aarch64-unknown-linux-gnu.tar.gz")
 
-# Replace with real sums once v0.1.0 is tagged and its artifacts exist:
+# Replace with real sums once the v0.1.0 release exists (auto-published on the
+# next push to main that carries this version):
 #   updpkgsums
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')
