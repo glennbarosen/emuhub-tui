@@ -93,6 +93,28 @@ pub fn is_rom_extension(extension: &str) -> bool {
     ROM_EXTENSIONS.contains(&lower.as_str())
 }
 
+/// Best-guess console for a ROM extension, for the import feature's target
+/// suggestion. Deliberately omits extensions that legitimately belong to more
+/// than one system on this device (`bin`, `cue`, `iso`, `chd`, `zip`, `7z`) —
+/// those need an explicit choice rather than a guess that's wrong half the
+/// time.
+pub fn console_for_extension(extension: &str) -> Option<&'static Console> {
+    let folder = match extension.to_ascii_lowercase().as_str() {
+        "gb" => "GB",
+        "gbc" => "GBC",
+        "gba" => "GBA",
+        "nes" => "FC",
+        "snes" | "sfc" => "SFC",
+        "md" | "gen" => "MD",
+        "sms" => "MS",
+        "gg" => "GG",
+        "nds" => "NDS",
+        "psx" => "PS",
+        _ => return None,
+    };
+    by_folder(folder)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +149,31 @@ mod tests {
     fn every_console_with_cores_is_a_known_console() {
         for (folder, _) in CONSOLE_CORE_NAMES {
             assert!(by_folder(folder).is_some(), "core table references unknown console {folder}");
+        }
+    }
+
+    #[test]
+    fn console_for_extension_maps_unambiguous_extensions() {
+        assert_eq!(console_for_extension("gba").unwrap().folder, "GBA");
+        assert_eq!(console_for_extension("GBA").unwrap().folder, "GBA");
+        assert_eq!(console_for_extension("sfc").unwrap().folder, "SFC");
+        assert_eq!(console_for_extension("snes").unwrap().folder, "SFC");
+        assert_eq!(console_for_extension("gen").unwrap().folder, "MD");
+        assert_eq!(console_for_extension("psx").unwrap().folder, "PS");
+    }
+
+    #[test]
+    fn console_for_extension_refuses_to_guess_ambiguous_ones() {
+        for ext in ["bin", "cue", "iso", "chd", "zip", "7z"] {
+            assert!(console_for_extension(ext).is_none(), "{ext} should not resolve to a single console");
+        }
+    }
+
+    #[test]
+    fn every_extension_returned_by_console_for_extension_is_a_rom_extension() {
+        for ext in ["gb", "gbc", "gba", "nes", "snes", "sfc", "md", "gen", "sms", "gg", "nds", "psx"] {
+            assert!(console_for_extension(ext).is_some());
+            assert!(is_rom_extension(ext));
         }
     }
 }

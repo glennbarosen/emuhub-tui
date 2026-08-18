@@ -6,6 +6,8 @@
 //! logic — see `AGENTS.md`'s note on the `Option<State>`-per-modal pattern.
 
 use emuhub_core::cascade::DeletePlan;
+use emuhub_core::consoles;
+use emuhub_core::import::ImportCandidate;
 use emuhub_core::models::{GameFile, SaveState};
 use ratatui::widgets::ListState;
 
@@ -34,19 +36,25 @@ pub enum SettingsItem {
     Reconnect,
     ChangeIp,
     FindDevice,
+    ImportRoms,
 }
 
 impl SettingsItem {
     /// Reconnect first — the more frequent action, so it's the row the menu
     /// opens on and `s` + `enter` is a two-keystroke reconnect.
-    pub const ALL: &'static [SettingsItem] =
-        &[SettingsItem::Reconnect, SettingsItem::ChangeIp, SettingsItem::FindDevice];
+    pub const ALL: &'static [SettingsItem] = &[
+        SettingsItem::Reconnect,
+        SettingsItem::ChangeIp,
+        SettingsItem::FindDevice,
+        SettingsItem::ImportRoms,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             SettingsItem::Reconnect => "Reconnect",
             SettingsItem::ChangeIp => "Change IP address",
             SettingsItem::FindDevice => "Find device on network",
+            SettingsItem::ImportRoms => "Import ROMs...",
         }
     }
 }
@@ -71,7 +79,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("/", "fuzzy search every console at once"),
             ("r", "refresh the library from the device"),
-            ("s", "settings — reconnect, change IP, find device"),
+            ("s", "settings — reconnect, change IP, find device, import ROMs"),
             ("?", "this help"),
             ("ctrl-c", "quit"),
         ],
@@ -333,5 +341,155 @@ impl SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// One file staged in the import overlay: a local candidate plus which
+/// console it's checked in to go to and whether it will be uploaded at all.
+pub struct ImportRow {
+    pub candidate: ImportCandidate,
+    pub checked: bool,
+    /// Index into `consoles::ALL_SYSTEMS` — cycled with `c`, seeded from the
+    /// candidate's extension-based suggestion when there is one, or from
+    /// whatever console the browser had selected when the overlay opened.
+    pub console_idx: usize,
+    /// True for a row that arrived via drag-and-drop/paste rather than the
+    /// folder scan — rendered with a distinct marker since it wasn't found
+    /// under `source` and so wouldn't reappear on a rescan.
+    pub dropped: bool,
+}
+
+/// A running upload's progress, for the gauge that replaces the row list
+/// while `apply_import` is in flight.
+pub struct ImportProgress {
+    pub file: String,
+    pub index: usize,
+    pub total: usize,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+}
+
+/// The import overlay: local files staged for upload to the device, found
+/// under a configured folder and/or dropped onto the terminal window. One
+/// shared queue for both — a dropped file appends to the same list a scan
+/// would have found it in, pre-checked, rather than living in a separate
+/// mode. See `emuhub_core::import` for the local-filesystem scanning/parsing
+/// this wraps, and `AGENTS.md`'s device-protocol gotchas for why an upload
+/// has to invalidate Onion's per-console ROM cache the same way delete/rename
+/// already do.
+pub struct ImportState {
+    /// The folder being scanned — starts as `DeviceConfig::import_dir`,
+    /// editable in place with `e`.
+    pub source: String,
+    pub editing_source: bool,
+    pub input: String,
+    pub rows: Vec<ImportRow>,
+    pub selected: usize,
+    pub list: ListState,
+    /// Set when a scan or upload batch fails outright (e.g. the source folder
+    /// doesn't exist), distinct from a per-row failure reported in the
+    /// finished outcome.
+    pub error: Option<String>,
+    pub progress: Option<ImportProgress>,
+}
+
+impl ImportState {
+    pub fn new(source: String) -> Self {
+        Self {
+            source,
+            editing_source: false,
+            input: String::new(),
+            rows: Vec::new(),
+            selected: 0,
+            list: ListState::default(),
+            error: None,
+            progress: None,
+        }
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let len = self.rows.len() as isize;
+        self.selected = ((self.selected as isize + delta).rem_euclid(len)) as usize;
+    }
+
+    pub fn toggle_current(&mut self) {
+        if let Some(row) = self.rows.get_mut(self.selected) {
+            row.checked = !row.checked;
+        }
+    }
+
+    /// Checks every row if any are unchecked, otherwise unchecks all — the
+    /// common "select everything, then deselect the couple I don't want"
+    /// pattern doesn't need a separate select-none binding.
+    pub fn toggle_all(&mut self) {
+        let all_checked = self.rows.iter().all(|r| r.checked);
+        for row in &mut self.rows {
+            row.checked = !all_checked;
+        }
+    }
+
+    /// Cycles the current row's target console. Wraps like every other
+    /// selection in this module rather than stopping at the ends.
+    pub fn cycle_console(&mut self, delta: isize) {
+        let len = consoles::ALL_SYSTEMS.len() as isize;
+        if let Some(row) = self.rows.get_mut(self.selected) {
+            row.console_idx = ((row.console_idx as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    /// Replaces the row list with a fresh scan, preserving nothing from the
+    /// previous listing — a rescan is a deliberate "start over", not a merge.
+    pub fn set_scanned(&mut self, candidates: Vec<ImportCandidate>, fallback_console_idx: usize) {
+        self.rows = candidates
+            .into_iter()
+            .map(|candidate| Self::new_row(candidate, fallback_console_idx, false))
+            .collect();
+        self.selected = 0;
+        self.error = None;
+    }
+
+    /// Appends dropped/pasted files to whatever is already staged, skipping
+    /// any local path already present — a second drop of the same file (or a
+    /// file the scan already found) must not duplicate a row.
+    pub fn add_dropped(&mut self, candidates: Vec<ImportCandidate>, fallback_console_idx: usize) {
+        for candidate in candidates {
+            if self.rows.iter().any(|r| r.candidate.local_path == candidate.local_path) {
+                continue;
+            }
+            self.rows.push(Self::new_row(candidate, fallback_console_idx, true));
+        }
+    }
+
+    fn new_row(candidate: ImportCandidate, fallback_console_idx: usize, dropped: bool) -> ImportRow {
+        let console_idx = candidate
+            .suggested
+            .and_then(|folder| consoles::ALL_SYSTEMS.iter().position(|c| c.folder == folder))
+            .unwrap_or(fallback_console_idx);
+        ImportRow { candidate, checked: true, console_idx, dropped }
+    }
+
+    /// The checked rows paired with their chosen console folder, ready for
+    /// `emuhub_core::import::plan`.
+    pub fn selections(&self) -> Vec<(ImportCandidate, &'static str)> {
+        self.rows
+            .iter()
+            .filter(|row| row.checked)
+            .map(|row| (row.candidate.clone(), consoles::ALL_SYSTEMS[row.console_idx].folder))
+            .collect()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.rows.iter().any(|row| row.checked)
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.input.push(c);
+    }
+
+    pub fn backspace(&mut self) {
+        self.input.pop();
     }
 }

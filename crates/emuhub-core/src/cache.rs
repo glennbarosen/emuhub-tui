@@ -241,6 +241,7 @@ mod tests {
             port: 22,
             username: "root".into(),
             image_cache_max_mb: 200,
+            import_dir: "/home/tester/Downloads".into(),
         };
         save_config(&paths, &cfg).unwrap();
         let loaded = load_config(&paths).unwrap();
@@ -258,6 +259,18 @@ mod tests {
         let loaded = load_config(&paths).unwrap();
         assert_eq!(loaded.host, "192.168.68.55");
         assert_eq!(loaded.image_cache_max_mb, 200);
+    }
+
+    #[test]
+    fn config_without_the_import_dir_field_still_loads() {
+        // Same contract as the image-cache field above: a config file written
+        // before the import feature existed must not fail to parse.
+        let (_dir, paths) = temp_paths();
+        paths.ensure_dirs().unwrap();
+        std::fs::write(paths.config_file(), "host = \"192.168.68.55\"\n").unwrap();
+
+        let loaded = load_config(&paths).unwrap();
+        assert_eq!(loaded.host, "192.168.68.55");
     }
 
     #[test]

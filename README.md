@@ -24,6 +24,9 @@ macOS/iOS app, built so it runs anywhere a terminal does.
   else.
 - **Rename and delete that clean up after themselves** — box art, save states and their thumbnails,
   favourite and recent entries, and Onion's per-console cache DB all move with the ROM.
+- **Import ROMs from your computer** — scans a configured folder (`~/Downloads` by default) for ROM
+  files, or drag one straight onto the terminal window, pick a console, and it uploads over the same
+  SSH session.
 - **Finds your handheld on the network** if you don't know its IP.
 - **Works offline.** The library is cached locally, so it opens instantly and browses fine with the
   handheld asleep in a drawer.
@@ -86,7 +89,7 @@ local subnet for something answering on port 22 that looks like a Miyoo.
 | `g` / `G` | Jump to first / last |
 | `/` | Fuzzy search every console at once |
 | `r` | Refresh the library from the device |
-| `s` | Settings — reconnect, change IP, find device |
+| `s` | Settings — reconnect, change IP, find device, import ROMs |
 | `?` | Help |
 | `ctrl-c` | Quit |
 | `q` / `esc` | Close an overlay |
@@ -103,7 +106,7 @@ mistyped key can't end your session.
 
 | | |
 |---|---|
-| `~/.config/emuhub/config.toml` | `host`, `port` (22), `username` (`root`), `image_cache_max_mb` (200) |
+| `~/.config/emuhub/config.toml` | `host`, `port` (22), `username` (`root`), `image_cache_max_mb` (200), `import_dir` (your Downloads folder) |
 | `~/.local/state/emuhub/` | Library, favourites, recents and save-state cache |
 | `~/.cache/emuhub/` | Box art and save-state thumbnails, pruned to the size cap on exit |
 
@@ -132,7 +135,7 @@ outside your network.
 
 ```bash
 cargo build --workspace
-cargo test --workspace     # 139 tests, no hardware needed
+cargo test --workspace     # 169 tests, no hardware needed
 cargo run -p emuhub-tui --bin emuhub -- <device-ip>
 ```
 

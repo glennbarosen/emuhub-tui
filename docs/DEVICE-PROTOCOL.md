@@ -199,6 +199,11 @@ full set that has to move with it:
 This is the bug the SwiftUI original shipped, and it's why `emuhub-core` computes the whole cascade as a
 pure plan before executing any of it.
 
+The cache in point 6 is a snapshot of a console's ROM listing, not specifically a memory of deletions —
+so it goes stale the same way on an *addition*. Importing a new ROM (`crates/emuhub-core/src/import.rs`,
+`Device::apply_import` in `transport.rs`) resets it exactly like a delete or rename does, or the
+handheld's own menu won't show the new game until something else forces a rescan.
+
 Implementation: `crates/emuhub-core/src/cascade.rs`.
 
 ---

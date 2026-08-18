@@ -14,6 +14,7 @@ pub mod consoles;
 pub mod discover;
 pub mod error;
 pub mod favorites;
+pub mod import;
 pub mod models;
 pub mod path;
 pub mod saves;

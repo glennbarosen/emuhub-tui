@@ -10,6 +10,8 @@
 //! some dropbear builds want the `none` method instead, so we try both.
 
 use std::borrow::Cow;
+use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,15 +19,69 @@ use russh::client::{self, Handle};
 use russh::keys::PublicKey;
 use russh::{cipher, kex, mac, ChannelMsg, Preferred};
 use russh_sftp::client::SftpSession;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::{Error, Result};
 use crate::favorites;
+use crate::import::ImportPlan;
 use crate::models::{FavoriteGame, GameFile, PlayHistoryEntry, SaveState};
 use crate::{cascade, saves, scan};
+
+/// Chunk size for streaming an upload to the device. Kept well under the
+/// server's negotiated `max_write_len` (`File`'s `AsyncWrite` impl already
+/// clamps to that per-call, so this is about giving the progress callback
+/// frequent-enough updates, not about protocol limits.
+const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
+
+/// How long any single SFTP round trip during an import — an existence
+/// check, a `mkdir`, opening the remote file, a chunk write, or the final
+/// close — may go unanswered before that file is given up on. The import
+/// overlay deliberately makes `esc`/`enter` inert while a transfer is in
+/// flight (see `App::confirm_import`) so a stray keypress can't abandon it
+/// mid-file — which means *any* unbounded round trip in this path has no way
+/// out short of killing the app, not just the byte-copy loop. Every SFTP call
+/// `apply_import`/`upload_file` make is wrapped in `timeout()` for exactly
+/// this reason. Same "LAN device, fail fast" reasoning as `Device::connect`'s
+/// 10s timeout, just longer, since a chunk write legitimately takes real time
+/// on a handheld's wifi.
+const UPLOAD_STEP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Result of running an `ImportPlan`: a single bad file must not abort the
+/// rest of the batch (a stale/oversized ROM three files in shouldn't lose the
+/// four good ones after it), so success/skip/failure are collected instead of
+/// the first error short-circuiting everything.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ImportOutcome {
+    pub uploaded: Vec<String>,
+    /// Filenames whose destination already existed — reported rather than
+    /// silently clobbered, mirroring the read-modify-write caution elsewhere
+    /// in this module.
+    pub skipped: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
 
 const FAVORITES_PATH: &str = "/mnt/SDCARD/Roms/favourite.json";
 const RECENTLIST_PATHS: &[&str] =
     &["/mnt/SDCARD/Roms/recentlist.json", "/mnt/SDCARD/Roms/recentlist-hidden.json"];
+
+/// Bounds one SFTP round trip to `UPLOAD_STEP_TIMEOUT`, turning a device
+/// that's stopped responding into a clear error instead of a wait with no
+/// end. Generic over the future's error type so it wraps both the
+/// `russh_sftp` calls (`try_exists`, `create_dir`, `create`, `rename` — all
+/// `SftpResult<T>`) and the `tokio::io` calls on the open file
+/// (`write_all`/`flush`/`shutdown` — `io::Result<()>`); `Error` already
+/// converts from both.
+async fn timeout<T, E>(fut: impl std::future::Future<Output = std::result::Result<T, E>>) -> Result<T>
+where
+    Error: From<E>,
+{
+    match tokio::time::timeout(UPLOAD_STEP_TIMEOUT, fut).await {
+        Ok(result) => Ok(result?),
+        Err(_) => {
+            Err(Error::Io(io::Error::new(io::ErrorKind::TimedOut, "device stopped responding during import")))
+        }
+    }
+}
 
 struct ClientHandler;
 
@@ -279,6 +335,117 @@ impl Device {
         }
         self.reset_console_cache(&plan.console_cache_db).await;
         Ok(())
+    }
+
+    /// Uploads a local file to the device, streaming it in fixed-size chunks
+    /// rather than buffering the whole thing like `write_file` does — a
+    /// PS1/N64 image can run several hundred MB, well past what belongs in
+    /// one in-memory `Vec`.
+    ///
+    /// Writes to `{remote}.part` and only renames into place once every byte
+    /// has landed, so an interrupted transfer (dropped wifi, closed laptop
+    /// lid) can never leave a truncated file sitting where the device's own
+    /// scanner would find it and list it as a playable ROM.
+    async fn upload_file(&self, local: &Path, remote: &str, mut on_progress: impl FnMut(u64)) -> Result<()> {
+        let partial = format!("{remote}.part");
+        let mut source = tokio::fs::File::open(local).await?;
+        let mut dest = timeout(self.sftp.create(&partial)).await?;
+
+        let mut buf = vec![0u8; UPLOAD_CHUNK_BYTES];
+        let mut sent = 0u64;
+        loop {
+            let n = source.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            timeout(dest.write_all(&buf[..n])).await?;
+            // Flushing per chunk is what makes `on_progress` mean "sent and
+            // acknowledged by the device", not just "handed to the local
+            // write queue". `File::poll_write` queues a write and only waits
+            // for its SFTP status reply here (or on shutdown) — without this,
+            // reading a ROM off local disk is fast enough that the gauge
+            // jumps to 100% almost immediately and then appears to freeze
+            // while `shutdown()` drains every unacknowledged write over the
+            // wifi link at the very end.
+            timeout(dest.flush()).await?;
+            sent += n as u64;
+            on_progress(sent);
+        }
+        timeout(dest.shutdown()).await?;
+        drop(dest);
+
+        timeout(self.sftp.rename(&partial, remote)).await?;
+        Ok(())
+    }
+
+    /// Runs an `ImportPlan`: uploads every job, skipping (not clobbering) a
+    /// destination that already exists, then resets the Onion ROM cache for
+    /// every console that received a new file.
+    ///
+    /// That reset is the same `console_cache_db`/`reset_console_cache`
+    /// mechanism `apply_delete`/`apply_rename` already use — the cache is a
+    /// snapshot of a console's ROM listing, so it goes stale on an addition
+    /// exactly as it does on a deletion or rename; nothing here is special to
+    /// imports.
+    ///
+    /// `on_progress(job_index, total_jobs, filename, bytes_sent, file_size)`
+    /// is called as each file streams, so the UI can drive a gauge without
+    /// waiting for the whole batch.
+    pub async fn apply_import(
+        &self,
+        plan: &ImportPlan,
+        mut on_progress: impl FnMut(usize, usize, &str, u64, u64),
+    ) -> ImportOutcome {
+        let mut outcome = ImportOutcome::default();
+        let mut touched_consoles: Vec<&str> = Vec::new();
+        let total = plan.jobs.len();
+
+        for (index, job) in plan.jobs.iter().enumerate() {
+            match timeout(self.sftp.try_exists(job.remote_path.as_str())).await {
+                Ok(true) => {
+                    outcome.skipped.push(job.filename.clone());
+                    continue;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    outcome.failed.push((job.filename.clone(), err.to_string()));
+                    continue;
+                }
+            }
+
+            let console_dir = format!("/mnt/SDCARD/Roms/{}", job.console_folder);
+            let dir_exists = timeout(self.sftp.try_exists(console_dir.as_str())).await.unwrap_or(true);
+            if !dir_exists {
+                if let Err(err) = timeout(self.sftp.create_dir(console_dir.as_str())).await {
+                    outcome.failed.push((job.filename.clone(), err.to_string()));
+                    continue;
+                }
+            }
+
+            let filename = job.filename.clone();
+            let file_size = job.size;
+            let upload_result = self
+                .upload_file(&job.local_path, &job.remote_path, |bytes_sent| {
+                    on_progress(index, total, &filename, bytes_sent, file_size);
+                })
+                .await;
+
+            match upload_result {
+                Ok(()) => {
+                    outcome.uploaded.push(job.filename.clone());
+                    if !touched_consoles.contains(&job.console_folder.as_str()) {
+                        touched_consoles.push(&job.console_folder);
+                    }
+                }
+                Err(err) => outcome.failed.push((job.filename.clone(), err.to_string())),
+            }
+        }
+
+        for folder in touched_consoles {
+            self.reset_console_cache(&cascade::console_cache_db(folder)).await;
+        }
+
+        outcome
     }
 
     /// Moves Onion's per-console ROM cache aside so it gets rebuilt on the

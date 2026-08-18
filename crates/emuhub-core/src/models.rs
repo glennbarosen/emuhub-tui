@@ -185,6 +185,13 @@ pub struct DeviceConfig {
     /// grows for the life of the install.
     #[serde(default = "default_image_cache_max_mb")]
     pub image_cache_max_mb: u64,
+    /// Local folder the import overlay scans for ROM files to upload.
+    /// Defaults to the platform Downloads folder — "I just downloaded a ROM"
+    /// is the case being served — but is a plain path the user can repoint
+    /// at anything, so an empty/unresolvable Downloads dir on an unusual
+    /// platform just means an empty default the user has to fill in once.
+    #[serde(default = "default_import_dir")]
+    pub import_dir: String,
 }
 
 fn default_port() -> u16 {
@@ -199,6 +206,13 @@ fn default_image_cache_max_mb() -> u64 {
     200
 }
 
+fn default_import_dir() -> String {
+    directories::UserDirs::new()
+        .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf))
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
@@ -206,6 +220,7 @@ impl Default for DeviceConfig {
             port: default_port(),
             username: default_username(),
             image_cache_max_mb: default_image_cache_max_mb(),
+            import_dir: default_import_dir(),
         }
     }
 }

@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 use crate::consoles;
 use crate::models::GameFile;
 
-const ROMS_ROOT: &str = "/mnt/SDCARD/Roms";
+// pub(crate) so `import.rs` can build remote upload paths against the same
+// root without a second copy of this magic string drifting out of sync.
+pub(crate) const ROMS_ROOT: &str = "/mnt/SDCARD/Roms";
 
 /// Parses raw `find` stdout into `GameFile`s. Unrecognized extensions,
 /// dotfiles, and paths that aren't directly under `Roms/{CONSOLE}/` are

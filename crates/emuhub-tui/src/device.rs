@@ -7,8 +7,9 @@ use std::collections::VecDeque;
 use emuhub_core::cache::{self, Paths};
 use emuhub_core::cascade::{DeletePlan, RenamePlan};
 use emuhub_core::discover;
+use emuhub_core::import::ImportPlan;
 use emuhub_core::models::{DeviceConfig, FavoriteGame, GameFile, PlayHistoryEntry, SaveState};
-use emuhub_core::transport::Device;
+use emuhub_core::transport::{Device, ImportOutcome};
 use tokio::sync::mpsc;
 
 pub enum DeviceRequest {
@@ -55,6 +56,13 @@ pub enum DeviceRequest {
         game: GameFile,
         plan: Box<RenamePlan>,
     },
+    /// Uploads every job in a confirmed import plan. Handled inline in this
+    /// loop, like `DeleteGame`/`RenameGame` and unlike `Discover` — an upload
+    /// needs the live `Device` session this loop exists to serialize access
+    /// to, where discovery needs no session at all. Box-art fetches queue
+    /// behind it, same tradeoff as a delete or rename; acceptable because the
+    /// import overlay is covering the browser for the duration anyway.
+    ImportRoms(Box<ImportPlan>),
     Shutdown,
 }
 
@@ -97,6 +105,17 @@ pub enum DeviceEvent {
         game: GameFile,
         plan: Box<RenamePlan>,
     },
+    /// One file's transfer advanced — `bytes_done`/`bytes_total` describe
+    /// *that* file, not the batch, matching what `Device::apply_import`'s
+    /// progress callback actually knows per call.
+    ImportProgress {
+        index: usize,
+        total: usize,
+        file: String,
+        bytes_done: u64,
+        bytes_total: u64,
+    },
+    ImportFinished(ImportOutcome),
     Error(String),
 }
 
@@ -208,6 +227,24 @@ pub async fn run(
                         let _ = events.send(DeviceEvent::Error(format!("rename failed: {err}")));
                     }
                 }
+            }
+            DeviceRequest::ImportRoms(plan) => {
+                let Some(d) = &device else {
+                    let _ = events.send(DeviceEvent::Error("not connected — can't import".into()));
+                    continue;
+                };
+                let outcome = d
+                    .apply_import(&plan, |index, total, file, bytes_done, bytes_total| {
+                        let _ = events.send(DeviceEvent::ImportProgress {
+                            index,
+                            total,
+                            file: file.to_string(),
+                            bytes_done,
+                            bytes_total,
+                        });
+                    })
+                    .await;
+                let _ = events.send(DeviceEvent::ImportFinished(outcome));
             }
             DeviceRequest::RefreshLibrary => {
                 let Some(d) = &device else {

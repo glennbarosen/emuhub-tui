@@ -23,7 +23,7 @@ Rust (2021 edition), Tokio, `russh`/`russh-sftp` (in-process SSH/SFTP, no shelli
 Two-crate workspace so a headless CLI mode is nearly free later:
 
 - `crates/emuhub-core/` — models, device-protocol quirks, SSH/SFTP transport, XDG cache. **No TUI
-  deps.** Fully unit-testable without hardware (72 tests, fixtures in `tests/fixtures/`).
+  deps.** Fully unit-testable without hardware (93 tests, fixtures in `tests/fixtures/`).
   - `models.rs` — `Console`, `GameFile`, `FavoriteGame`, `PlayHistoryEntry`, `SaveState`, `AppCache`.
   - `path.rs` — Quirk 2: resolves `../../` segments the device writes into favourite/recent rompaths.
   - `consoles.rs` — static console list, ROM extensions, and Quirk 3's console→RetroArch-core table
@@ -42,6 +42,13 @@ Two-crate workspace so a headless CLI mode is nearly free later:
   - `cascade.rs` — what deleting/renaming a ROM *actually* has to touch: box art, saves and their
     thumbnails, the `favourite.json` and `recentlist.json` entries, and Onion's `{CONSOLE}_cache6.db`.
     Pure plans, no I/O — which is what lets the confirm dialog show the exact file list up front.
+  - `import.rs` — the local-filesystem half of ROM import: `scan_local_dir` walks a configured folder
+    (default `~/Downloads`) two levels deep for files `consoles::is_rom_extension` recognizes,
+    `parse_dropped_paths` normalizes whatever a terminal pastes on a file drop (quoted, backslash-escaped,
+    or a percent-encoded `file://` URI) into paths, and `plan` turns a selection into a pure `ImportPlan`
+    — same "plan first, execute later" shape as `cascade.rs`. The actual upload
+    (`Device::upload_file`/`apply_import`, streamed in chunks and finalized via a `.part` rename so an
+    interrupted transfer can't leave a truncated ROM the scanner would list) lives in `transport.rs`.
   - `discover.rs` — TCP:22 sweep of the local /24, then a real connect + `/mnt/SDCARD` check to
     confirm a hit is the handheld and not just something with SSH open.
   - `cache.rs` — XDG paths: config `~/.config/emuhub/`, library/favourites cache `~/.local/state/emuhub/`,
@@ -58,18 +65,20 @@ Two-crate workspace so a headless CLI mode is nearly free later:
     modal slots in as another guard. Ctrl-c is checked first and is the *only* quit — `q` closes
     overlays but does nothing in the browser, so a mistyped key can't end the session.
   - `app.rs` — `App` state + pure transition logic (`move_selection`, `toggle_favorite`, …), the part
-    unit-tested (67 tests) since automating real raw-mode key input isn't practical here.
+    unit-tested (73 tests) since automating real raw-mode key input isn't practical here.
     Focus is three panes, `Consoles → Games → Detail`; the Details pane is not an overlay, so its
     action menu (`DetailState`) is a plain field rather than an `Option<…>` and `move_selection`
     routes to it when it holds focus. **Per-game actions (saves, favourite, rename, delete) have no
     key bindings** — the Details menu is their only entry point, deliberately, so there is one route
     to each rather than a menu plus hidden shortcuts to keep in sync.
     - `app/menus.rs` — the overlay/menu state structs (`IpPromptState`, `SettingsState`,
-      `DiscoveryState`, `SavesState`, `ConfirmDeleteState`, `RenamePromptState`, `DetailState` and the
-      `SettingsItem`/`DetailItem`/`GameSettingsItem` enums driving them) split out of `app.rs` — this is
-      the part of `App`'s state that grows by one self-contained struct per new modal rather than by
-      touching existing logic, re-exported into `app::` via `pub use menus::*` so nothing outside `app`
-      needs to know it moved.
+      `DiscoveryState`, `SavesState`, `ConfirmDeleteState`, `RenamePromptState`, `DetailState`,
+      `ImportState` and the `SettingsItem`/`DetailItem`/`GameSettingsItem` enums driving them) split out
+      of `app.rs` — this is the part of `App`'s state that grows by one self-contained struct per new
+      modal rather than by touching existing logic, re-exported into `app::` via `pub use menus::*` so
+      nothing outside `app` needs to know it moved. `ImportState` holds one shared staging queue for
+      both entry paths — a folder scan and a terminal drag-and-drop drop feed the same `Vec<ImportRow>`,
+      not two separate modes.
   - `device.rs` — the device task: owns the one `Device` session, serializes SFTP ops, reports
     `DeviceEvent`s back over an `mpsc` channel. The UI task never awaits network I/O directly.
   - `search.rs` — `/` fuzzy search across every console at once, via `nucleo`.
@@ -86,7 +95,7 @@ Two-crate workspace so a headless CLI mode is nearly free later:
 
 ```bash
 cargo build --workspace          # debug build, ~5-10s incremental
-cargo test --workspace           # 139 tests, no device needed
+cargo test --workspace           # 169 tests, no device needed
 cargo clippy --workspace --all-targets
 cargo run -p emuhub-tui --bin emuhub -- <miyoo-ip>     # run against real hardware
 cargo run -p emuhub-tui --bin spike -- <miyoo-ip>      # device diagnostic (no TUI): connectivity,
@@ -115,7 +124,8 @@ forgotten:
   through `cascade::delete_plan`/`rename_plan`; never remove a ROM path directly.
 - **Onion caches the ROM list per console** in `Roms/{CONSOLE}/{CONSOLE}_cache6.db`. Left alone after
   a delete/rename it keeps showing the old entry on the handheld. The cascade renames it to `.bak` so
-  Onion rebuilds it — renamed, not deleted, so a bad rebuild is recoverable.
+  Onion rebuilds it — renamed, not deleted, so a bad rebuild is recoverable. The same reset applies to
+  an *addition*: `Device::apply_import` resets it after an upload for exactly the same reason.
 
 ## russh / dropbear connection gotchas
 
@@ -177,6 +187,12 @@ The Miyoo's dropbear is old and won't negotiate with `russh`'s modern defaults. 
   *before* constructing `App` (which builds the `Picker`) for exactly this reason — keep it that way,
   and keep every fallible non-terminal setup step (config/cache loading) *before* that point, so an
   early `?` never leaves the terminal stuck in raw mode.
+- **Bracketed paste is load-bearing, not cosmetic.** `main.rs` enables it (`EnableBracketedPaste`
+  alongside `EnterAlternateScreen`, undone at teardown) because every terminal tested (ghostty, kitty,
+  foot, alacritty) delivers a file dropped onto the window as a paste of its path — without it,
+  `Event::Paste` never arrives and drag-and-drop into the import overlay silently does nothing. Only
+  `run_loop` acts on a paste, and only while `app.import` is open; elsewhere it's discarded rather than
+  typed into whatever happens to have focus.
 
 ## Testing
 

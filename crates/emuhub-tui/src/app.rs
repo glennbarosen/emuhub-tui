@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use emuhub_core::cascade::{self, DeletePlan, RenamePlan};
+use emuhub_core::import::{self, ImportCandidate};
 use emuhub_core::models::{FavoriteGame, GameFile, PlayHistoryEntry, SaveState};
 use emuhub_core::{consoles, saves, scan};
 use ratatui::widgets::ListState;
@@ -116,6 +117,7 @@ pub struct App {
     pub discovery: Option<DiscoveryState>,
     pub confirm_delete: Option<ConfirmDeleteState>,
     pub rename_prompt: Option<RenamePromptState>,
+    pub import: Option<ImportState>,
     /// The `?` overlay. A plain flag rather than an `Option<State>` — it holds
     /// no cursor and no input, it's rendered straight off `HELP_SECTIONS`.
     pub help: bool,
@@ -209,6 +211,7 @@ impl App {
             discovery: None,
             confirm_delete: None,
             rename_prompt: None,
+            import: None,
             help: false,
             status: None,
             should_quit: false,
@@ -273,6 +276,73 @@ impl App {
         self.host = host.clone();
         self.ip_prompt = None;
         Some(host)
+    }
+
+    /// Opens the import overlay against `dir`. Doesn't scan it — the scan is
+    /// synchronous local-disk I/O with no network round trip to hide behind,
+    /// so `main.rs` runs it directly and hands the result to
+    /// `apply_import_scan`, the same "mutate state here, do the I/O in
+    /// `main.rs`" split every other overlay in this module follows.
+    pub fn open_import(&mut self, dir: &str) {
+        self.import = Some(ImportState::new(dir.to_string()));
+    }
+
+    /// Index into `consoles::ALL_SYSTEMS` to fall back on for a candidate
+    /// whose extension doesn't map to a single console (see
+    /// `consoles::console_for_extension`) — whatever console the browser had
+    /// selected when the overlay opened, so an ambiguous `.zip` lands
+    /// wherever the user was already looking rather than a hardcoded default.
+    fn import_fallback_console_idx(&self) -> usize {
+        self.current_console()
+            .filter(|c| c.kind == ConsoleKind::Real)
+            .and_then(|c| consoles::ALL_SYSTEMS.iter().position(|s| s.folder == c.folder))
+            .unwrap_or(0)
+    }
+
+    /// Applies a completed (or failed) local-folder scan to the open import
+    /// overlay. A no-op if the overlay isn't open — the scan can only have
+    /// been requested while it was.
+    pub fn apply_import_scan(&mut self, result: Result<Vec<ImportCandidate>, String>) {
+        let fallback = self.import_fallback_console_idx();
+        let Some(state) = &mut self.import else { return };
+        match result {
+            Ok(candidates) => state.set_scanned(candidates, fallback),
+            Err(err) => state.error = Some(err),
+        }
+    }
+
+    /// Appends dropped/pasted local paths to the open import overlay,
+    /// silently ignoring any that don't look like a ROM — `main.rs` doesn't
+    /// pre-filter, since what counts as a ROM is `import`'s call, not the
+    /// terminal-paste parser's.
+    pub fn import_add_dropped(&mut self, paths: Vec<std::path::PathBuf>) {
+        let fallback = self.import_fallback_console_idx();
+        let Some(state) = &mut self.import else { return };
+        let candidates = paths.iter().filter_map(|p| import::candidate_from_path(p)).collect();
+        state.add_dropped(candidates, fallback);
+    }
+
+    /// Builds the plan for the checked rows and marks the overlay as
+    /// uploading, so a stray `enter`/`esc` while a transfer is in flight
+    /// can't abandon it. Returns `None` (and changes nothing) with no rows
+    /// checked or a transfer already running — the actual upload happens on
+    /// the device task; this only stages the plan and the in-progress state.
+    pub fn confirm_import(&mut self) -> Option<import::ImportPlan> {
+        let state = self.import.as_ref()?;
+        if state.progress.is_some() || !state.has_selection() {
+            return None;
+        }
+        let plan = import::plan(&state.selections());
+        if let Some(state) = &mut self.import {
+            state.progress = Some(ImportProgress {
+                file: String::new(),
+                index: 0,
+                total: plan.jobs.len(),
+                bytes_done: 0,
+                bytes_total: 0,
+            });
+        }
+        Some(plan)
     }
 
     /// Indices into `consoles` of the entries the console pane actually
@@ -939,6 +1009,17 @@ impl App {
                 }
                 None
             }
+            DeviceEvent::ImportProgress { index, total, file, bytes_done, bytes_total } => {
+                if let Some(state) = &mut self.import {
+                    state.progress = Some(ImportProgress { file, index, total, bytes_done, bytes_total });
+                }
+                None
+            }
+            DeviceEvent::ImportFinished(outcome) => {
+                self.import = None;
+                self.set_status(import_outcome_message(&outcome), !outcome.failed.is_empty());
+                None
+            }
             DeviceEvent::Error(err) => {
                 self.set_status(err, true);
                 None
@@ -977,6 +1058,25 @@ impl App {
             }
         }
     }
+}
+
+/// The status line summary for a finished import batch — errors first, so a
+/// batch that partly failed doesn't read as an unqualified success.
+fn import_outcome_message(outcome: &emuhub_core::transport::ImportOutcome) -> String {
+    if outcome.uploaded.is_empty() && outcome.skipped.is_empty() && outcome.failed.is_empty() {
+        return "Nothing imported".to_string();
+    }
+    let mut parts = Vec::new();
+    if !outcome.uploaded.is_empty() {
+        parts.push(format!("{} uploaded", outcome.uploaded.len()));
+    }
+    if !outcome.skipped.is_empty() {
+        parts.push(format!("{} already on device", outcome.skipped.len()));
+    }
+    if !outcome.failed.is_empty() {
+        parts.push(format!("{} failed", outcome.failed.len()));
+    }
+    parts.join(", ")
 }
 
 #[cfg(test)]
@@ -2030,5 +2130,173 @@ mod tests {
         app.help = true; // '?'
         app.help = false; // any key
         assert!(!app.help);
+    }
+
+    fn candidate(name: &str, suggested: Option<&'static str>) -> ImportCandidate {
+        ImportCandidate {
+            local_path: std::path::PathBuf::from(format!("/home/b/{name}")),
+            filename: name.to_string(),
+            size: 1024,
+            suggested,
+        }
+    }
+
+    #[test]
+    fn a_completed_scan_seeds_rows_from_the_extension_suggestion() {
+        let mut app = app_with_games();
+        app.console_idx = idx_of(&app, "GBA"); // fallback console, only used for the ambiguous row
+        app.open_import("/home/b/Downloads");
+
+        app.apply_import_scan(Ok(vec![candidate("Tetris.gb", Some("GB")), candidate("disc.chd", None)]));
+
+        let state = app.import.as_ref().unwrap();
+        assert_eq!(state.rows.len(), 2);
+        assert_eq!(consoles::ALL_SYSTEMS[state.rows[0].console_idx].folder, "GB");
+        assert_eq!(
+            consoles::ALL_SYSTEMS[state.rows[1].console_idx].folder,
+            "GBA",
+            "an ambiguous extension falls back to whatever console was selected in the browser"
+        );
+        assert!(state.rows.iter().all(|r| r.checked), "a freshly scanned row starts checked");
+        assert!(state.rows.iter().all(|r| !r.dropped));
+    }
+
+    #[test]
+    fn a_failed_scan_reports_the_error_without_touching_any_existing_rows() {
+        let mut app = app_with_games();
+        app.open_import("/does/not/exist");
+        app.apply_import_scan(Err("no such directory".to_string()));
+
+        let state = app.import.as_ref().unwrap();
+        assert_eq!(state.error.as_deref(), Some("no such directory"));
+        assert!(state.rows.is_empty());
+    }
+
+    #[test]
+    fn toggle_all_checks_everything_then_unchecks_everything() {
+        let mut app = app_with_games();
+        app.open_import("/home/b/Downloads");
+        app.apply_import_scan(Ok(vec![candidate("a.gba", Some("GBA")), candidate("b.gba", Some("GBA"))]));
+
+        let state = app.import.as_mut().unwrap();
+        state.rows[0].checked = false;
+        state.toggle_all(); // not all checked -> check everything
+        assert!(state.rows.iter().all(|r| r.checked));
+        state.toggle_all(); // all checked -> uncheck everything
+        assert!(state.rows.iter().all(|r| !r.checked));
+    }
+
+    #[test]
+    fn cycle_console_wraps_and_only_touches_the_selected_row() {
+        let mut app = app_with_games();
+        app.open_import("/home/b/Downloads");
+        app.apply_import_scan(Ok(vec![candidate("a.gba", Some("GBA")), candidate("b.gba", Some("GBA"))]));
+
+        let state = app.import.as_mut().unwrap();
+        let original_second = state.rows[1].console_idx;
+        state.selected = 0;
+        state.rows[0].console_idx = 0; // start at the first console to exercise the backward wrap
+        state.cycle_console(-1); // wraps to the last console
+        assert_eq!(state.rows[0].console_idx, consoles::ALL_SYSTEMS.len() - 1);
+        assert_eq!(state.rows[1].console_idx, original_second, "cycling must not move an unselected row");
+    }
+
+    #[test]
+    fn dropped_files_append_pre_checked_and_do_not_duplicate_an_existing_row() {
+        // `candidate_from_path` stats the real filesystem, so the dropped
+        // paths (unlike the scanned-row fixtures elsewhere in this module)
+        // have to exist for real.
+        let dir = tempfile::tempdir().unwrap();
+        let a_path = dir.path().join("a.gba");
+        let new_path = dir.path().join("new.nes");
+        std::fs::write(&a_path, b"rom").unwrap();
+        std::fs::write(&new_path, b"rom").unwrap();
+
+        let mut app = app_with_games();
+        app.open_import(dir.path().to_str().unwrap());
+        app.apply_import_scan(Ok(vec![ImportCandidate {
+            local_path: a_path.clone(),
+            filename: "a.gba".to_string(),
+            size: 3,
+            suggested: Some("GBA"),
+        }]));
+
+        app.import_add_dropped(vec![
+            a_path,                       // already staged — must not duplicate
+            new_path,                     // new — must be added
+            dir.path().join("notes.txt"), // not a ROM extension — must be dropped
+        ]);
+
+        let state = app.import.as_ref().unwrap();
+        assert_eq!(state.rows.len(), 2, "the duplicate and the non-ROM must not add rows");
+        let dropped_row = state.rows.iter().find(|r| r.candidate.filename == "new.nes").unwrap();
+        assert!(dropped_row.checked);
+        assert!(dropped_row.dropped);
+    }
+
+    #[test]
+    fn confirm_import_requires_at_least_one_checked_row() {
+        let mut app = app_with_games();
+        app.open_import("/home/b/Downloads");
+        app.apply_import_scan(Ok(vec![candidate("a.gba", Some("GBA"))]));
+        app.import.as_mut().unwrap().rows[0].checked = false;
+
+        assert!(app.confirm_import().is_none());
+        assert!(app.import.as_ref().unwrap().progress.is_none());
+    }
+
+    #[test]
+    fn confirm_import_builds_a_plan_and_marks_the_overlay_as_uploading() {
+        let mut app = app_with_games();
+        app.open_import("/home/b/Downloads");
+        app.apply_import_scan(Ok(vec![candidate("a.gba", Some("GBA"))]));
+
+        let plan = app.confirm_import().expect("one checked row makes a plan");
+        assert_eq!(plan.jobs.len(), 1);
+        assert_eq!(plan.jobs[0].remote_path, "/mnt/SDCARD/Roms/GBA/a.gba");
+        assert!(app.import.as_ref().unwrap().progress.is_some());
+
+        // A second confirm while a transfer is already staged must not fire
+        // again — the overlay is inert until `ImportFinished` clears it.
+        assert!(app.confirm_import().is_none());
+    }
+
+    #[test]
+    fn import_progress_events_update_the_open_overlay() {
+        let mut app = app_with_games();
+        app.open_import("/home/b/Downloads");
+        app.apply_import_scan(Ok(vec![candidate("a.gba", Some("GBA"))]));
+        app.confirm_import();
+
+        app.apply_device_event(DeviceEvent::ImportProgress {
+            index: 0,
+            total: 1,
+            file: "a.gba".to_string(),
+            bytes_done: 512,
+            bytes_total: 1024,
+        });
+
+        let progress = app.import.as_ref().unwrap().progress.as_ref().unwrap();
+        assert_eq!(progress.file, "a.gba");
+        assert_eq!(progress.bytes_done, 512);
+    }
+
+    #[test]
+    fn import_finished_closes_the_overlay_and_reports_the_outcome() {
+        let mut app = app_with_games();
+        app.open_import("/home/b/Downloads");
+        app.apply_import_scan(Ok(vec![candidate("a.gba", Some("GBA"))]));
+        app.confirm_import();
+
+        app.apply_device_event(DeviceEvent::ImportFinished(emuhub_core::transport::ImportOutcome {
+            uploaded: vec!["a.gba".to_string()],
+            skipped: Vec::new(),
+            failed: Vec::new(),
+        }));
+
+        assert!(app.import.is_none());
+        let status = app.status.as_ref().unwrap();
+        assert!(status.text.contains("1 uploaded"));
+        assert!(!status.is_error);
     }
 }

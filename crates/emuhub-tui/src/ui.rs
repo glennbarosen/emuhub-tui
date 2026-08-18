@@ -7,7 +7,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
@@ -57,6 +57,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.discovery.is_some() {
         draw_discovery(frame, app);
+    }
+    if app.import.is_some() {
+        draw_import(frame, app);
     }
     if app.ip_prompt.is_some() {
         draw_ip_prompt(frame, app);
@@ -615,6 +618,120 @@ fn draw_discovery(frame: &mut Frame, app: &mut App) {
     frame.render_widget(hint, rows[2]);
 }
 
+/// The import overlay: a source-folder line, then either the staged file
+/// list or, while a transfer is running, a gauge for the file currently
+/// streaming — the same single-slot swap `draw_saves` does between its list
+/// and its empty-state message.
+fn draw_import(frame: &mut Frame, app: &mut App) {
+    let Some(import) = &app.import else { return };
+    let area = centered_rect(70, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block =
+        Block::default().borders(Borders::ALL).title(" Import ROMs ").border_style(border_style(true));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+
+    let source_style =
+        if import.editing_source { Style::default().fg(Color::Cyan) } else { Style::default() };
+    let source_text = if import.editing_source {
+        format!("Source: {}_", import.input)
+    } else {
+        format!("Source: {}  [e] edit", import.source)
+    };
+    frame.render_widget(Paragraph::new(Span::styled(source_text, source_style)), rows[0]);
+
+    if let Some(progress) = &import.progress {
+        let ratio = if progress.bytes_total == 0 {
+            0.0
+        } else {
+            (progress.bytes_done as f64 / progress.bytes_total as f64).clamp(0.0, 1.0)
+        };
+        let label = format!(
+            "{}/{} · {} — {} / {}",
+            progress.index + 1,
+            progress.total.max(1),
+            progress.file,
+            format_size(progress.bytes_done),
+            format_size(progress.bytes_total)
+        );
+        let gauge = Gauge::default().gauge_style(Style::default().fg(Color::Cyan)).ratio(ratio).label(label);
+        // `Gauge` fills the *entire* rect it's given, not just one line — the
+        // list needs `rows[1]`'s full flexible height (`Min(3)`), but handing
+        // the same tall rect to a gauge turns a progress bar into a huge
+        // solid-colored block. Pin it to a slim area at the top instead and
+        // leave the rest of `rows[1]` blank.
+        let gauge_area = top_slice(rows[1], 3);
+        frame.render_widget(gauge, gauge_area);
+        let hint =
+            Paragraph::new(Span::styled("uploading — please wait", Style::default().fg(Color::DarkGray)));
+        frame.render_widget(hint, rows[2]);
+        return;
+    }
+
+    if let Some(error) = &import.error {
+        let text = vec![
+            Line::from(Span::styled(
+                format!("Couldn't scan {}", import.source),
+                Style::default().fg(Color::Red),
+            )),
+            Line::from(Span::styled(error.as_str(), Style::default().fg(Color::DarkGray))),
+        ];
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), rows[1]);
+    } else if import.rows.is_empty() {
+        let text = Line::from(Span::styled(
+            format!("No ROM files found under {}.", import.source),
+            Style::default().fg(Color::DarkGray),
+        ));
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), rows[1]);
+    } else {
+        let items: Vec<ListItem> = import
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let marker = if i == import.selected { "▸ " } else { "  " };
+                let checkbox = if row.checked { "[x]" } else { "[ ]" };
+                let console = consoles::ALL_SYSTEMS[row.console_idx].folder;
+                let dropped = if row.dropped { " (dropped)" } else { "" };
+                // Console target and size come right after the checkbox,
+                // ahead of the filename — a long ROM filename (region tags,
+                // dump-group suffixes) would otherwise push them past the
+                // edge of the list where a plain `List` clips rather than
+                // wraps, leaving the one thing you're cycling with `c`
+                // invisible.
+                let line = format!(
+                    "{marker}{checkbox} {console:<7}{dropped} {}  {}",
+                    row.candidate.filename,
+                    format_size(row.candidate.size)
+                );
+                let style = if i == import.selected {
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(line).style(style)
+            })
+            .collect();
+        let selected_row = Some(import.selected);
+        let state = &mut app.import.as_mut().expect("checked above").list;
+        state.select(selected_row);
+        frame.render_stateful_widget(List::new(items), rows[1], state);
+    }
+
+    let hint = Paragraph::new(Span::styled(
+        "space toggle · a all · c console · e edit source · r rescan · enter import · esc close",
+        Style::default().fg(Color::DarkGray),
+    ))
+    .wrap(Wrap { trim: true });
+    frame.render_widget(hint, rows[2]);
+}
+
 /// A blocking dialog rather than an in-place list filter (unlike `search`,
 /// which replaces the games pane) — it must work even with no library
 /// loaded yet (first launch), so it floats over the whole screen instead of
@@ -632,6 +749,18 @@ fn draw_ip_prompt(frame: &mut Frame, app: &App) {
         Line::from(Span::styled("enter confirm · esc cancel", Style::default().fg(Color::DarkGray))),
     ];
     frame.render_widget(Paragraph::new(text).block(block), area);
+}
+
+/// A fixed-`height`-row slice pinned to the top of `area`. For a widget that
+/// must not stretch to fill a flexible-height layout row the way a list is
+/// meant to — `Gauge` in particular fills its *entire* given rect, so handing
+/// it a `Min(3)` row that happens to have resolved to twenty-odd lines turns
+/// a progress bar into one giant solid-colored block.
+fn top_slice(area: Rect, height: u16) -> Rect {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(height), Constraint::Min(0)])
+        .split(area)[0]
 }
 
 /// Standard ratatui nested-layout idiom for a centered floating popup.

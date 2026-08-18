@@ -6,10 +6,13 @@ mod ui;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use emuhub_core::cache::{self, Paths};
+use emuhub_core::import;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
@@ -109,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         app.open_ip_prompt();
     }
 
-    let result = run_loop(&mut terminal, &mut app, &paths, &req_tx, &mut evt_rx).await;
+    let result = run_loop(&mut terminal, &mut app, &paths, &config.import_dir, &req_tx, &mut evt_rx).await;
     restore_terminal(&mut terminal)?;
 
     let _ = req_tx.send(DeviceRequest::Shutdown);
@@ -135,13 +138,17 @@ async fn main() -> anyhow::Result<()> {
 fn init_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste is what makes drag-and-drop into the import overlay
+    // work: every terminal tested (ghostty, kitty, foot, alacritty) delivers
+    // a dropped file as a paste of its path, which crossterm only surfaces as
+    // `Event::Paste` once this is on.
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -177,6 +184,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     paths: &Paths,
+    import_dir: &str,
     req_tx: &mpsc::UnboundedSender<DeviceRequest>,
     evt_rx: &mut mpsc::UnboundedReceiver<DeviceEvent>,
 ) -> anyhow::Result<()> {
@@ -188,18 +196,39 @@ async fn run_loop(
         if event::poll(Duration::from_millis(33))? {
             let raw = event::read()?;
             tracing::trace!(?raw, "raw terminal event");
-            if let Event::Key(key) = raw {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(key.code, key.modifiers, app, paths, req_tx);
+            match raw {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(key.code, key.modifiers, app, paths, import_dir, req_tx);
                 }
+                // A terminal drop/paste is only meaningful while the import
+                // overlay is open to receive it — dropped elsewhere in the
+                // browser it's silently discarded rather than typed into
+                // whatever text field happens to have focus.
+                Event::Paste(text) if app.import.is_some() => {
+                    app.import_add_dropped(import::parse_dropped_paths(&text));
+                }
+                _ => {}
             }
         }
 
         while let Ok(evt) = evt_rx.try_recv() {
+            let library_loaded = matches!(evt, DeviceEvent::LibraryLoaded(_));
+            let import_finished = matches!(evt, DeviceEvent::ImportFinished(_));
+
             if let Some(entries) = app.apply_device_event(evt) {
                 let _ = req_tx.send(DeviceRequest::SyncFavorites(entries));
             }
             maybe_request_image(app, req_tx);
+
+            // A newly imported ROM needs a rescan to appear at all, and the
+            // cache is worth writing to disk right away rather than waiting
+            // for exit — a kill between now and shutdown must not lose it.
+            if import_finished {
+                let _ = req_tx.send(DeviceRequest::RefreshLibrary);
+            }
+            if library_loaded {
+                persist_cache(paths, app);
+            }
         }
 
         if app.should_quit {
@@ -213,6 +242,7 @@ fn handle_key(
     modifiers: KeyModifiers,
     app: &mut App,
     paths: &Paths,
+    import_dir: &str,
     req_tx: &mpsc::UnboundedSender<DeviceRequest>,
 ) {
     tracing::trace!(?code, ?modifiers, "key event");
@@ -306,6 +336,69 @@ fn handle_key(
         return;
     }
 
+    // Same band as discovery, and for the same reason: this is one of the
+    // things the settings menu opens into, so it sits above settings and
+    // esc here returns to the browser rather than back into that menu.
+    if let Some(state) = &mut app.import {
+        // Editing the source folder is its own tiny text-input mode, same
+        // shape as the IP prompt — nested here rather than promoted to its
+        // own top-level guard, since it only ever exists while this overlay
+        // does.
+        if state.editing_source {
+            match code {
+                KeyCode::Esc => {
+                    state.editing_source = false;
+                    state.input.clear();
+                }
+                KeyCode::Enter => {
+                    let dir = state.input.trim().to_string();
+                    if !dir.is_empty() {
+                        state.source = dir.clone();
+                        state.editing_source = false;
+                        state.input.clear();
+                        scan_import_dir(app, &dir);
+                    }
+                }
+                KeyCode::Backspace => state.backspace(),
+                KeyCode::Char(c) => state.push_char(c),
+                _ => {}
+            }
+            return;
+        }
+
+        // Inert while a transfer is running: a stray esc/enter must not be
+        // able to abandon an upload partway through a file.
+        if state.progress.is_some() {
+            return;
+        }
+
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.import = None,
+            KeyCode::Char('j') | KeyCode::Down => state.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => state.move_selection(-1),
+            KeyCode::Char(' ') => state.toggle_current(),
+            KeyCode::Char('a') => state.toggle_all(),
+            KeyCode::Char('c') => state.cycle_console(1),
+            KeyCode::Char('e') => {
+                state.input = state.source.clone();
+                state.editing_source = true;
+            }
+            KeyCode::Char('r') => {
+                let dir = state.source.clone();
+                scan_import_dir(app, &dir);
+            }
+            KeyCode::Enter => match app.confirm_import() {
+                Some(plan) => {
+                    app.set_status(format!("Importing {} file(s)...", plan.jobs.len()), false);
+                    let _ = req_tx.send(DeviceRequest::ImportRoms(Box::new(plan)));
+                }
+                None => app.set_status("Check at least one file to import", true),
+            },
+            _ => {}
+        }
+        return;
+    }
+
     if let Some(settings) = &mut app.settings {
         match code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => {
@@ -325,6 +418,10 @@ fn handle_key(
                     app.open_discovery();
                     app.set_status("Scanning the local network...", false);
                     let _ = req_tx.send(DeviceRequest::Discover);
+                }
+                Some(SettingsItem::ImportRoms) => {
+                    app.open_import(import_dir);
+                    scan_import_dir(app, import_dir);
                 }
                 None => {}
             },
@@ -514,6 +611,15 @@ fn open_saves_browser(app: &mut App, req_tx: &mpsc::UnboundedSender<DeviceReques
         let _ = req_tx.send(DeviceRequest::LoadSaveStates);
     }
     maybe_request_image(app, req_tx);
+}
+
+/// Scans `dir` for local ROM files and feeds the result into the open import
+/// overlay. Synchronous local-disk I/O, done directly here rather than
+/// through the device task — there is no network round trip to hide behind,
+/// unlike everything else `DeviceRequest` carries.
+fn scan_import_dir(app: &mut App, dir: &str) {
+    let result = import::scan_local_dir(std::path::Path::new(dir)).map_err(|err| err.to_string());
+    app.apply_import_scan(result);
 }
 
 /// Flips the selected game's favourite status and pushes it to the device.
